@@ -1,6 +1,11 @@
+
+#ifndef __LATTE_DISKDB_H
+#define __LATTE_DISKDB_H
+
 #include <stdlib.h>
 #include <stdbool.h>
-#include "status.h"
+#include "state.h"
+#include <sds/sds.h>
 typedef struct  _DiskDb {
     
 } DiskDb;
@@ -11,3 +16,5 @@ typedef struct _DiskDbOptions {
 } DiskDbOptions;
 
 DiskDbState diskDbOpen(DiskDbOptions op, char* path, DiskDb** db);
+
+#endif

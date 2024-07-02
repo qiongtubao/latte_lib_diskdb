@@ -2,7 +2,7 @@
 #include <test/testhelp.h>
 #include <test/testassert.h>
 #include <sds/sds.h>
-#include <status.h>
+#include <state.h>
 #include <db.h>
 #include <read.h>
 #include <write.h>
@@ -17,7 +17,7 @@ int test_get() {
     sds result ;
     status = diskDbGet(db, rp, "hello", &result);
     assert(NotFound == status);
-    status = diskDbPut(db,wp, "hello", "world");
+    status = diskDbPut(db, wp, "hello", "world");
     assert(Ok == status);
     status = diskDbGet(db, rp, "hello", &result);
     assert(Ok == status);

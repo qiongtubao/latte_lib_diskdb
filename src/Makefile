@@ -15,18 +15,22 @@ ifeq ($(uname_S),Linux)
 	FINAL_SHARD_LIB=-lrt 
 endif
 
-latte_lib:
+LATTE_C_WORKSPACE=$(CURDIR)/../deps/latte_c
+
+$(LATTE_C_WORKSPACE)/out/lib/liblatte.a:
 	cd ../deps/latte_c && make build MODULES=$(LIB_MODUELS) 
 
 %.o: %.c 
 	$(LATTE_DISKDB_CC) -o $@ -c $< -I../deps/latte_c/out/include 
 
 MAC_M1_CFLAGS=-fprofile-arcs -ftest-coverage
-OBJS= main.o server.o  server_config.o client.o
+OBJS= db.o read.o  write.o
 # -lstdc++
-all: latte_lib $(OBJS) 
-	$(LATTE_DISKDB_CC) -o main $(OBJS) -I../deps/latte_c/out/include ../deps/latte_c/out/lib/liblatte.a  ../deps/latte_c/deps/jemalloc/lib/libjemalloc.a $(FINAL_SHARD_LIB) -lm  -ldl -lz -lstdc++ -lpthread $(MAC_M1_CFLAGS)
-	
+all: $(LATTE_C_WORKSPACE)/out/lib/liblatte.a $(OBJS) 
+	mkdir -p ../out/lib &&\
+	cp $(LATTE_C_WORKSPACE)/out/lib/liblatte.a ../out/lib/ &&\
+	cp $(LATTE_C_WORKSPACE)/out/lib/libjemalloc.a ../out/lib/ &&\
+	$(AR) $(ARFLAGS) ../out/lib/liblatte_diskdb.a  $(OBJS) 
 
 clean:
 	cd ../deps/latte_c && make clean_all 

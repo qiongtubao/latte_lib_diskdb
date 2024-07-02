@@ -4,4 +4,5 @@
 *.so
 *.d
 *.log
-main
+.make-prerequisites
+out
