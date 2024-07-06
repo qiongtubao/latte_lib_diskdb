@@ -11,7 +11,13 @@
 #include <fs/file.h>
 #include <utils/error.h>
 #include <fs/env.h>
+#include "comparator.h"
 
+
+typedef struct _DiskDbOptions {
+    bool create_if_missing;
+    bool error_if_exists;
+} DiskDbOptions;
 typedef struct  _DiskDb {
     latte_mutex mutex;
     MemTable* mem;
@@ -19,12 +25,11 @@ typedef struct  _DiskDb {
     sds dbname;
     FileLock* db_lock;
     Env* env;
+    DiskDbOptions options;
+    Comparator* comparator;
 } DiskDb;
 
 
-typedef struct _DiskDbOptions {
-    bool create_if_missing;
-} DiskDbOptions;
 
 Error* diskDbOpen(DiskDbOptions op, char* path, DiskDb** db);
 extern sds global_result;

@@ -24,7 +24,7 @@ $(LATTE_C_WORKSPACE)/out/lib/liblatte.a:
 	$(LATTE_DISKDB_CC) -o $@ -c $< -I../deps/latte_c/out/include 
 
 MAC_M1_CFLAGS=-fprofile-arcs -ftest-coverage
-OBJS= db.o read.o  write.o
+OBJS= db.o read.o  write.o comparator.o
 # -lstdc++
 all: $(LATTE_C_WORKSPACE)/out/lib/liblatte.a $(OBJS) 
 	mkdir -p ../out/lib &&\

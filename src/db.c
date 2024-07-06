@@ -23,8 +23,18 @@ void diskDbRelease(DiskDb* db) {
 int isMemEmpty(DiskDb* db) {
     return db->mem != NULL;
 }
-char* LockFileName(char* dir_name)  {
+sds LockFileName(char* dir_name)  {
     return sdscatprintf(sdsempty(), "%s/Lock", dir_name);
+}
+sds CurrentFileName(char* dir_name) {
+    return sdscatprintf(sdsempty(), "%s/CURRENT", dir_name);
+}
+
+Error* dbCreate(DiskDb* db) {
+    VersionEdit edit;
+    edit.comparator = bytewiseComparator.getName();
+    
+    return &Ok;
 }
 Error* RecoverDb(DiskDb* db, VersionEdit* edit, bool* save_manifest) {
     mutexAssertHeld(&db->mutex);
@@ -36,6 +46,30 @@ Error* RecoverDb(DiskDb* db, VersionEdit* edit, bool* save_manifest) {
     if (!isOk(error)) {
         return error;
     }
+    sds currentFileName = CurrentFileName(db->dbname);
+    
+    if (!fileExists(currentFileName)) {
+        //无文件可创建
+        if (db->options.create_if_missing) {
+            printf("Creating DB %s since it was missing.",
+                db->dbname);
+            error = dbCreate(db);
+            if (!isOk(error)) {
+                return error;
+            }
+        } else {
+            return errorCreate(CInvalidArgument ,db->dbname, "does not exist (create_if_missing is false)");
+        }
+    } else {
+        if (db->options.error_if_exists) {
+            return errorCreate(CInvalidArgument, db->dbname,
+                                        "exists (error_if_exists is true)");
+        }
+    }
+    // error = recoverVersions(db->versions, save_manifest);
+    if (!isOk(error)) {
+        return error;
+    }
     return &Ok;
 }
 
@@ -43,6 +77,7 @@ Error* RecoverDb(DiskDb* db, VersionEdit* edit, bool* save_manifest) {
 Error* diskDbOpen(DiskDbOptions op, char* path, DiskDb** db) {
     *db = NULL;
     DiskDb* impl = diskDbCreate(path);
+    impl->options = op;
     impl->dbname = sdsnew(path);
     mutexLock(&impl->mutex);
     VersionEdit edit;
