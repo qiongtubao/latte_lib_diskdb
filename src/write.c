@@ -1,10 +1,10 @@
 #include "write.h"
 #include "db.h"
-extern sds global_result;
-DiskDbState diskDbPut(DiskDb* db, DiskDbWriteOptions wp,char* key, char* value) {
+
+Error* diskDbPut(DiskDb* db, DiskDbWriteOptions wp,char* key, char* value) {
     global_result = sdsnew(value);
-    if (global_result != NULL) {
-        return Ok;
+    if (global_result == NULL) {
+        return errorCreate(CCorruption, "test", "test1");
     }
-    return Corruption;
+    return &Ok;
 }

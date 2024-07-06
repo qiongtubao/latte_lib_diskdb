@@ -2,25 +2,26 @@
 #include <test/testhelp.h>
 #include <test/testassert.h>
 #include <sds/sds.h>
-#include <state.h>
+#include <status.h>
 #include <db.h>
 #include <read.h>
 #include <write.h>
-
+#include <utils/error.h>
 int test_get() {
     DiskDb* db;
     DiskDbOptions op;
     DiskDbReadOptions rp;
     DiskDbWriteOptions wp;
     op.create_if_missing = true;
-    DiskDbState status = diskDbOpen(op, "./testdb", &db);
+    Error* status = diskDbOpen(op, "./testdb", &db);
     sds result ;
     status = diskDbGet(db, rp, "hello", &result);
-    assert(NotFound == status);
+    assert(CNotFound == status->code);
     status = diskDbPut(db, wp, "hello", "world");
-    assert(Ok == status);
+    printf("\n%d\n", status->code);
+    assert(isOk(status));
     status = diskDbGet(db, rp, "hello", &result);
-    assert(Ok == status);
+    assert(isOk(status));
     assert(strcmp(result, "world") == 0);
     return 1;
 }
