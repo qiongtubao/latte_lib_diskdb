@@ -1,14 +1,36 @@
 
 #ifndef __LATTE_DISKDB_VERSIONEDIT_H
 #define __LATTE_DISKDB_VERSIONEDIT_H
+#include "sds/sds.h"
+#include "list/list.h"
+#include "sequenceNumber.h"
+#include "set/set.h"
+#include "internalKey.h"
 
-typedef uint64_t SequenceNumber;
 typedef struct VersionEdit {
+    sds comparator;
     uint64_t log_number;
     uint64_t prev_log_number;
     uint64_t next_file_number;
-    SequenceNumber seq;
-    sds comparator;
+    SequenceNumber last_sequence;
+    
+    list* compact_pointers;
+    set* delete_files;
+    list* new_files;
 } VersionEdit;
+
+VersionEdit* versionEditCreate();
+void versionEditInit(VersionEdit* ve);
+void versionEditDestroy(VersionEdit* ve);
+sds versionEditToSds(VersionEdit* ve);
+
+typedef struct FileMetaData {
+    int refs;
+    int allowed_seeks;
+    uint64_t number;
+    uint64_t file_size;
+    InternalKey smallest;
+    InternalKey largest;
+} FileMetaData;
 
 #endif

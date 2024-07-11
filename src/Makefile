@@ -1,5 +1,5 @@
 
-LIB_MODUELS="sds dict ae config connection list endianconv rax server mutex fs utils dict_plugins set"
+LIB_MODUELS="sds dict ae config connection list endianconv rax server mutex fs utils dict_plugins set crc"
 
 uname_S:= $(shell sh -c 'uname -s 2>/dev/null || echo not')
 uname_M:= $(shell sh -c 'uname -s 2>/dev/null || echo not')
@@ -24,7 +24,7 @@ $(LATTE_C_WORKSPACE)/out/lib/liblatte.a:
 	$(LATTE_DISKDB_CC) -o $@ -c $< -I../deps/latte_c/out/include 
 
 MAC_M1_CFLAGS=-fprofile-arcs -ftest-coverage
-OBJS= db.o read.o  write.o comparator.o
+OBJS= db.o read.o  write.o comparator.o internalKey.o versionEdit.o
 # -lstdc++
 all: $(LATTE_C_WORKSPACE)/out/lib/liblatte.a $(OBJS) 
 	mkdir -p ../out/lib &&\

@@ -4,6 +4,8 @@
 #include <fs/dir.h>
 #include <assert.h>
 #include <string.h>
+#include "logWriter.h"
+#include "versionEdit.h"
 sds global_result = NULL;
 DiskDb* diskDbCreate(char* path) {
     DiskDb* db = zmalloc(sizeof(DiskDb));
@@ -30,10 +32,47 @@ sds CurrentFileName(char* dir_name) {
     return sdscatprintf(sdsempty(), "%s/CURRENT", dir_name);
 }
 
+sds DescriptorFileName(sds dbname, uint64_t number) {
+    return sdscatprintf(sdsempty(), "%s/MANIFEST-%06llu",
+        dbname,
+        number);
+}
+
 Error* dbCreate(DiskDb* db) {
     VersionEdit edit;
+    versionEditInit(&edit);
+    //comparator
     edit.comparator = bytewiseComparator.getName();
-    
+    edit.log_number = 0;
+    edit.next_file_number = 2;
+    edit.last_sequence = 0;
+
+    //  manifest 从1开始
+    const sds manifest = DescriptorFileName(db->dbname, 1);
+    WritableFile* file;
+    Error* error = envNewWritableFile(db->env, manifest, &file);
+    if(!isOk(error)) {
+        return error;
+    }
+    {
+        LogWriter* writer = writeLogCreate(file);
+        sds record = versionEditToSds(&edit);
+        Error* error = logAddRecord(writer, record);
+        if (isOk(error)) {
+            error = writableFileSync(file);
+        }
+        if (isOk(error)) {
+            error = writableFileClose(file);
+        }
+        sdsfree(record);
+
+    }
+    closeWritableFile(file);
+    if (isOk(error)) {
+        error = dbSetCurrentFile(db, 1);
+    } else {
+        envRemoveFile(manifest);
+    }
     return &Ok;
 }
 Error* RecoverDb(DiskDb* db, VersionEdit* edit, bool* save_manifest) {
