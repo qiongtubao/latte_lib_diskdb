@@ -6,6 +6,7 @@
 #include "fs/env.h"
 #include "comparator.h"
 #include "logWriter.h"
+#include "recover.h"
 typedef struct TableCache {
 
 } TableCache;
@@ -46,7 +47,14 @@ typedef struct VersionSetBuilder {
     LevelState levels[7]; //kNumLevels
 } VersionSetBuilder;
 
+typedef struct CorruptionReporter {
+    WritableFile* dst;
+} CorruptionReporter;
 
+typedef struct VersionSetRecover {
+    Recover recover;
+    Error* error;
+} VersionSetRecover;
 typedef struct LogReader {
     SequentialFile* file;
     bool checksum;
@@ -57,5 +65,19 @@ typedef struct LogReader {
     uint64_t end_of_buffer_offset;
     uint64_t initial_offset;
     bool resyncing;
+    Recover* revocer;
+    char* store;
 } LogReader;
+
+typedef enum LogReaderRecordType {
+  kEof = 5, //kMaxRecordType + 1
+  // Returned whenever we find an invalid physical record.
+  // Currently there are three situations in which this happens:
+  // * The record has an invalid CRC (ReadPhysicalRecord reports a drop)
+  // * The record is a 0-length record (No drop is reported)
+  // * The record is below constructor's initial_offset (No drop is reported)
+  kBadRecord = 6 //kMaxRecordType + 2
+} LogReaderRecordType;
+
+
 #endif
