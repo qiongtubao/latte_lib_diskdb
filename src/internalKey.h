@@ -17,7 +17,6 @@ typedef struct ParsedInternalKey {
     sds user_key;
     SequenceNumber sequence;
 } ParsedInternalKey;
-
 InternalKey* internalKeyCreate(sds user_key, SequenceNumber seq,ValueType type);
 sds encodeInternalKey(InternalKey* key);
 // InternalKey* decodeInternalKey(sds value);

@@ -20,3 +20,6 @@ InternalKey* internalKeyCreate(sds user_key, SequenceNumber seq, ValueType type)
     return internalKey;
 }
 
+sds encodeInternalKey(InternalKey* key) {
+    return key->rep;
+}

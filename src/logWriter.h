@@ -36,6 +36,6 @@ typedef struct LogWriter {
 } LogWriter;
 
 LogWriter* writeLogCreate(WritableFile* file);
-int logAddRecord(LogWriter* writer, sds record);
+Error* logAddRecord(LogWriter* writer, sds record);
 
 #endif

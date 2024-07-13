@@ -42,10 +42,11 @@ sds versionEditToSds(VersionEdit* ve) {
         dst = sdsAppendVarint32(dst, kLastSequence);
         dst = sdsAppendVarint64(dst, ve->last_sequence);
     }
-
+    
     //上次compaction 最大键保存
     listIter* iter = listGetIterator(ve->compact_pointers, AL_START_HEAD);
     listNode* node;
+    
     while ((node = listNext(iter)) != NULL) {
         Pair* p = (Pair*)node->value;
         dst = sdsAppendVarint32(dst, kCompactPointer);
@@ -59,7 +60,7 @@ sds versionEditToSds(VersionEdit* ve) {
 
     dictIterator* diter = dictGetIterator(ve->delete_files);
     dictEntry*  de;
-    while ((de = dictNext(&diter)) != NULL) {
+    while ((de = dictNext(diter)) != NULL) {
         sds key = (sds)(dictGetEntryKey(de));
         dst = sdsAppendVarint32(dst, kDeletedFile);
         dst = sdsAppendVarint32(dst, key);
@@ -111,6 +112,5 @@ void versionEditRelease(VersionEdit* ve) {
     versionEditDestroy(ve);
     zfree(ve);
 }
-
 
 

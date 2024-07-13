@@ -34,13 +34,13 @@ Error* writerEmitPhysicalRecord(LogWriter* writer, RecordType t, const char* ptr
 
     // Write the header and the payload
     // 文件写入 header    
-    Error* error = writableFileAppend(writer, buf, kHeaderSize);
+    Error* error = writableFileAppend(writer->file, buf, kHeaderSize);
     if (isOk(error)) {
         //写入数据
-        error = writableFileAppend(writer, ptr, length);
+        error = writableFileAppend(writer->file, ptr, length);
         if (isOk(error)) {
             //刷到磁盘
-            error = writableFileFlush(writer);
+            error = writableFileFlush(writer->file);
         }
     } 
     //修改offset
@@ -60,7 +60,7 @@ Error* writerEmitPhysicalRecord(LogWriter* writer, RecordType t, const char* ptr
  *  7 + （50000 - 31761 = 18239） = 18246 
  */
 //方法将记录写入一个Slice结构
-int logAddRecord(LogWriter* writer, sds record) {
+Error* logAddRecord(LogWriter* writer, sds record) {
     //ptr指向需要写入的记录内容
     const char* ptr = record;
     //left代表需要写入的记录内容长度
@@ -83,8 +83,8 @@ int logAddRecord(LogWriter* writer, sds record) {
             // Switch to a new block
             if (leftover > 0) {
                 // Fill the trailer (literal below relies on kHeaderSize being 7)
-                static_assert(kHeaderSize == 7, "");
-                writeLogAppend(writer, "\x00\x00\x00\x00\x00\x00", leftover);
+                // assert(kHeaderSize == 7, "");
+                writableFileAppend(writer, "\x00\x00\x00\x00\x00\x00", leftover);
             }
             writer->block_offset = 0;
         }
@@ -118,6 +118,7 @@ int logAddRecord(LogWriter* writer, sds record) {
         left -= fragment_length;
         begin = false;
     } while (isOk(error) && left > 0);
+    
     return error;
 
 }

@@ -12,6 +12,7 @@
 #include <utils/error.h>
 #include <fs/env.h>
 #include "comparator.h"
+#include "versionSet.h"
 
 
 typedef struct _DiskDbOptions {
@@ -27,6 +28,7 @@ typedef struct  _DiskDb {
     Env* env;
     DiskDbOptions options;
     Comparator* comparator;
+    VersionSet* versions;
 } DiskDb;
 
 
