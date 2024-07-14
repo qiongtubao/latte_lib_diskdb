@@ -18,7 +18,6 @@ int test_get() {
     status = diskDbGet(db, rp, "hello", &result);
     assert(CNotFound == status->code);
     status = diskDbPut(db, wp, "hello", "world");
-    printf("\n%d\n", status->code);
     assert(isOk(status));
     status = diskDbGet(db, rp, "hello", &result);
     assert(isOk(status));

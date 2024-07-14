@@ -1,7 +1,7 @@
 #include "versionSet.h"
 #include "fileName.h"
 #include "crc/crc.h"
-
+#include "versionEdit.h"
 VersionSet* versionSetCreate(sds dbname, Env* env) {
     VersionSet* versionset = zmalloc(sizeof(VersionSet));
     versionset->dbname = dbname;
@@ -40,12 +40,13 @@ void ReportDrop(LogReader* logReader,uint64_t bytes, Error* reason) {
 unsigned int ReadPhysicalRecord(LogReader* reader, Slice* result) {
     while (true) {
         if (reader->buffer.len < kHeaderSize) {
+            printf("\nreader buffer < 7\n");
             //长度小于7
             if (!reader->eof) {
                 // Last read was a full read, so this is a trailer to skip
                 // 上次读取是完整读取，因此这是一段可以跳过的预告片
                 // 清理缓存
-                SliceClear(&reader->buffer);
+                reader->buffer.p = sdsemptylen(kBlockSize);
                 //buffer读取32768字节， 顺序读
                 Error* error = sequentialFileRead(reader->file,
                     kBlockSize, &(reader->buffer));
@@ -107,6 +108,7 @@ unsigned int ReadPhysicalRecord(LogReader* reader, Slice* result) {
         // 检查crc
         if (reader->checksum) {
             uint32_t expected_crc = crc32c_unmask(decodeFixed32(header));
+            //类型的crc（1字节） + 数据的crc
             uint32_t actual_crc = crc32c(header + 6, 1 + length);
             if (actual_crc != expected_crc) {
                 // 删除缓冲区的其余部分，因为“长度”本身可能
@@ -128,7 +130,7 @@ unsigned int ReadPhysicalRecord(LogReader* reader, Slice* result) {
             return kBadRecord;
         }
         //读取数据
-        result->p = sdsnew(header + kHeaderSize);
+        result->p = sdsnewlen(header + kHeaderSize, length);
         result->len = length;
         return type;
     }
@@ -161,11 +163,13 @@ bool readLogRecord(LogReader* reader, Slice* record, sds* scratch) {
     //最后一次记录offset 小于初始化值 
     if (reader->last_record_offset < reader->initial_offset) {
         if (!skipToInitialBlock(reader)) {
+            printf("end...\n");
             return false;
         }
     }
     //清理数据
-    scratch = sdsemptylen(100);
+    sdsclear(scratch);
+    record->len = 0;
     //碎片记录
     bool in_fragmented_record = false;
     // Record offset of the logical record that we're reading
@@ -174,10 +178,12 @@ bool readLogRecord(LogReader* reader, Slice* record, sds* scratch) {
     // 0 是一个虚拟值，以使编译器满意
     uint64_t prospective_record_offset = 0;
     //分段
-    Slice fragment;
+    Slice fragment = {.p = sdsemptylen(kBlockSize), .len = 0};
+    printf("\nstart fragemengt\n");
     while (true) {
         //解析log 数据在fragment
         const unsigned int record_type = ReadPhysicalRecord(reader, &fragment);
+        printf("\nReadPhysicalRecord %d\n", record_type);
         // ReadPhysicalRecord may have only had an empty trailer remaining in its
         // internal buffer. Calculate the offset of the next physical record now
         // that it has returned, properly accounting for its header size.
@@ -199,19 +205,22 @@ bool readLogRecord(LogReader* reader, Slice* record, sds* scratch) {
         }
         switch (record_type) {
             case kFullType:
+                printf("in_fragmented_record %d\n", in_fragmented_record);
                 if (in_fragmented_record) {
                     // Handle bug in earlier versions of log::Writer where
                     // it could emit an empty kFirstType record at the tail end
                     // of a block followed by a kFullType or kFirstType record
                     // at the beginning of the next block.
-                    if (sdslen(scratch) == 0) {
+                    if (sdslen(scratch) != 0) {
                         ReportCorruption(reader, sdslen(scratch), "partial record without end(1)");
                     }
                 }
                 prospective_record_offset = physical_record_offset;
+                printf("prospective_record_offset %s %d\n", fragment.p, fragment.len);
                 //清理临时
                 sdsclear(scratch);
-                *record = fragment;
+                record->p = fragment.p;
+                record->len = fragment.len;
                 reader->last_record_offset = prospective_record_offset;
                 return true;
             case kFirstType:
@@ -289,6 +298,72 @@ bool readLogRecord(LogReader* reader, Slice* record, sds* scratch) {
     return false;
 }
 
+void versionSetBuilderApply(VersionSetBuilder* builer, VersionEdit* edit) {
+    listIter* iter = listGetIterator(edit->compact_pointers, AL_START_HEAD);
+    listNode* node;
+    while ((node = listNext(iter)) != NULL) {
+        Pair* p = (Pair*)node->value;
+        int level = (p->first);
+        builer->vset->compact_pointer[level] = 
+            encodeInternalKey(p->second);
+    }
+    listReleaseIterator(iter);
+
+    dictIterator* diter = dictGetIterator(edit->delete_files);
+    dictEntry*  de;
+    while ((de = dictNext(diter)) != NULL) {
+        Pair* p = (Pair*)dictGetEntryKey(de);
+        int level = p->first;
+        uint64_t number = p->second;
+        setAdd(
+            builer->levels[level].deleted_files,
+            number);
+    }
+    dictReleaseIterator(diter);
+
+    iter = listGetIterator(edit->new_files, AL_START_HEAD);
+    while ((de = listNext(iter)) != NULL) {
+        Pair* p = (Pair*)node->value;
+        int level = p->first;
+        FileMetaData* f = fileMetaDataCreate(p->second);
+        f->refs = 1; 
+        // We arrange to automatically compact this file after
+        // a certain number of seeks.  Let's assume:
+        //   (1) One seek costs 10ms
+        //   (2) Writing or reading 1MB costs 10ms (100MB/s)
+        //   (3) A compaction of 1MB does 25MB of IO:
+        //         1MB read from this level
+        //         10-12MB read from next level (boundaries may be misaligned)
+        //         10-12MB written to next level
+        // This implies that 25 seeks cost the same as the compaction
+        // of 1MB of data.  I.e., one seek costs approximately the
+        // same as the compaction of 40KB of data.  We are a little
+        // conservative and allow approximately one seek for every 16KB
+        // of data before triggering a compaction.
+        // 我们安排在一定数量的寻道之后自动压缩此文件。我们假设：
+        // (1) 一次寻道花费 10ms
+        // (2) 写入或读取 1MB 花费 10ms（100MB/s）
+        // (3) 压缩 1MB 需要 25MB 的 IO：
+        // 从此级别读取 1MB
+        // 从下一级别读取 10-12MB（边界可能未对齐）
+        // 向下一级别写入 10-12MB
+        // 这意味着 25 次寻道的成本与压缩 1MB 数据的成本相同。即，一次寻道的成本大约与压缩 40KB 数据的成本相同。
+        // 我们有点保守，在触发压缩之前，大约每 16KB 数据进行一次寻道。
+        
+        // 文件大小/16k 是允许失败的次数 
+        f->allowed_seeks = (int)(f->file_size / 16384U);
+        //次数 < 100 设置为100
+        if (f->allowed_seeks < 100) f->allowed_seeks = 100;
+
+        setRemove(builer->levels[level].deleted_files, f->number);
+        setAdd(builer->levels[level].added_files, f);
+    }
+    listReleaseIterator(iter);
+ 
+}
+
+
+//
 Error* recoverVersions(VersionSet* set, bool* save_manifest) {
     //先去读取CURRENT 文件拿到manifest file 
     // Read "CURRENT" file, which contains a pointer to the current manifest file

@@ -7,6 +7,7 @@
 #include "comparator.h"
 #include "logWriter.h"
 #include "recover.h"
+#include "versionEdit.h"
 typedef struct TableCache {
 
 } TableCache;
@@ -51,10 +52,13 @@ typedef struct CorruptionReporter {
     WritableFile* dst;
 } CorruptionReporter;
 
+
 typedef struct VersionSetRecover {
     Recover recover;
     Error* error;
 } VersionSetRecover;
+
+void VersionSetRecoverCorruption(VersionSetRecover* recover, size_t bytes, Error* s);
 typedef struct LogReader {
     SequentialFile* file;
     bool checksum;
@@ -78,6 +82,7 @@ typedef enum LogReaderRecordType {
   // * The record is below constructor's initial_offset (No drop is reported)
   kBadRecord = 6 //kMaxRecordType + 2
 } LogReaderRecordType;
-
-
+VersionSetBuilder* versionSetBuilderCreate();
+bool readLogRecord(LogReader* reader, Slice* record, sds* scratch);
+void versionSetBuilderApply(VersionSetBuilder* builer, VersionEdit* edit);
 #endif

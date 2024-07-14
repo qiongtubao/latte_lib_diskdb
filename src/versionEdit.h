@@ -6,6 +6,8 @@
 #include "sequenceNumber.h"
 #include "set/set.h"
 #include "internalKey.h"
+#include "sds/sds_plugins.h"
+#include "utils/error.h"
 
 typedef struct VersionEdit {
     sds comparator;
@@ -23,6 +25,11 @@ VersionEdit* versionEditCreate();
 void versionEditInit(VersionEdit* ve);
 void versionEditDestroy(VersionEdit* ve);
 sds versionEditToSds(VersionEdit* ve);
+Error* decodeVersionEditSlice(VersionEdit* edit, Slice* src);
+bool editHasLogNumber(VersionEdit* ve);
+bool editHasPrevLogNumber(VersionEdit* ve);
+bool editHasNextFileNumber(VersionEdit* ve);
+bool editHasLastSequence(VersionEdit* ve);
 
 typedef struct FileMetaData {
     int refs;
@@ -32,5 +39,10 @@ typedef struct FileMetaData {
     InternalKey smallest;
     InternalKey largest;
 } FileMetaData;
+typedef struct Pair {
+    void* first;
+    void* second;
+} Pair;
+FileMetaData* fileMetaDataCreate();
 
 #endif

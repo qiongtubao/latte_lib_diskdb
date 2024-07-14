@@ -2,12 +2,20 @@
 #include "assert.h"
 #include "crc/crc.h"
 #include "sds/sds_plugins.h"
+
+static uint32_t type_crc[5] = {0};
+void InitTypeCrc(uint32_t* type_crc) {
+  for (int i = 0; i <= kMaxRecordType; i++) {
+    char t = (char)(i);
+    type_crc[i] = crc32c(&t, 1);
+  }
+}
 LogWriter* writeLogCreate(WritableFile* file) {
     LogWriter* logWriter = zmalloc(sizeof(LogWriter));
     logWriter->file = file;
     logWriter->block_offset = 0;
     memset(logWriter->type_crc, 0, (kMaxRecordType + 1) * sizeof(uint32_t));
-
+    InitTypeCrc(&logWriter->type_crc);
     return logWriter;
 }
 
@@ -27,6 +35,8 @@ Error* writerEmitPhysicalRecord(LogWriter* writer, RecordType t, const char* ptr
     // Compute the crc of the record type and the payload.
     // 计算记录类型和有效载荷的 crc。
     // 通过计算crc   
+    //type_crc[t]先计算好crc 保存了 就可以追加其他数据
+    // crc32c([0..n]) = crc32extend(crc32[0], crc32c(1..n))
     uint32_t crc = crc32c_extend(writer->type_crc[t], ptr, length);
     crc = crc32c_mask(crc);
     //buf 前4位存放crc

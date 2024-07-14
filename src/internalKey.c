@@ -20,6 +20,13 @@ InternalKey* internalKeyCreate(sds user_key, SequenceNumber seq, ValueType type)
     return internalKey;
 }
 
+InternalKey* internalKeyCopy(InternalKey* internalKey) {
+    InternalKey* key = zmalloc(sizeof(InternalKey));
+    key->rep = sdsdup(internalKey->rep);
+    key->seq = internalKey->seq;
+    return;
+}
+
 sds encodeInternalKey(InternalKey* key) {
     return key->rep;
 }
