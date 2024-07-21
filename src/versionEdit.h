@@ -31,18 +31,11 @@ bool editHasPrevLogNumber(VersionEdit* ve);
 bool editHasNextFileNumber(VersionEdit* ve);
 bool editHasLastSequence(VersionEdit* ve);
 
-typedef struct FileMetaData {
-    int refs;
-    int allowed_seeks;
-    uint64_t number;
-    uint64_t file_size;
-    InternalKey smallest;
-    InternalKey largest;
-} FileMetaData;
+
 typedef struct Pair {
     void* first;
     void* second;
 } Pair;
-FileMetaData* fileMetaDataCreate();
+
 
 #endif

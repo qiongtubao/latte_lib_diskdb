@@ -7,16 +7,24 @@
 #include "logWriter.h"
 #include "versionEdit.h"
 #include "fileName.h"
+#include <assert.h>
+#include "sds/sds_plugins.h"
+
+
 sds global_result = NULL;
+
+//创建DiskDb
 DiskDb* diskDbCreate(char* path) {
     DiskDb* db = zmalloc(sizeof(DiskDb));
     mutexInit(&db->mutex);
     db->dbname = sdsnew(path);
     db->env = envCreate();
-    db->versions = versionSetCreate(db->dbname, db->env);
+    db->comparator = &bytewiseComparator;
+    db->versions = versionSetCreate(db->dbname, db->env, db->comparator);
     return db;
 }
 
+//释放dickDb
 void diskDbRelease(DiskDb* db) {
     envRelease(db->env);
     mutexDestroy(&db->mutex);
@@ -24,13 +32,13 @@ void diskDbRelease(DiskDb* db) {
     zfree(db);
 }
 
+//memtable是否为空
 int isMemEmpty(DiskDb* db) {
     return db->mem != NULL;
 }
 
 
-#include <assert.h>
-#include "sds/sds_plugins.h"
+
 Error* dbSetCurrentFile(DiskDb* db ,Env* env, sds dbname,
                       uint64_t descriptor_number) {
   // Remove leading "dbname/" and add newline to manifest file name
@@ -58,6 +66,7 @@ Error* dbSetCurrentFile(DiskDb* db ,Env* env, sds dbname,
   return error;
 }
 
+//初始化一个db  （CURRENT文件  MANIFEST文件）
 Error* dbCreate(DiskDb* db) {
     //初始化db
     VersionEdit edit;
@@ -102,6 +111,8 @@ Error* dbCreate(DiskDb* db) {
     }
     return error;
 }
+
+//从manifest中还原出versionEdit
 Error* RecoverDb(DiskDb* db, VersionEdit* edit, bool* save_manifest) {
     mutexAssertHeld(&db->mutex);
     Error* error = dirCreate(db->dbname);
@@ -140,7 +151,6 @@ Error* RecoverDb(DiskDb* db, VersionEdit* edit, bool* save_manifest) {
     if (!isOk(error)) {
         return error;
     }
-    printf("aaaaan\n");
     SequenceNumber max_sequence = 0;
     // 从所有比描述符中命名的日志文件更新的日志文件中恢复
     //（前一个版本可能添加了新的日志文件，但没有在描述符中注册它们）。
@@ -161,7 +171,7 @@ Error* diskDbOpen(DiskDbOptions op, char* path, DiskDb** db) {
     mutexLock(&impl->mutex);
     VersionEdit edit;
     bool save_manifest = false;
-    //恢复数据
+    //尝试恢复数据
     Error* s = RecoverDb(impl, &edit, &save_manifest);
     if (isOk(s) && impl->mem == NULL) {
         //创建新的Log 和 MemTable对象

@@ -6,34 +6,57 @@
 #include <utils/error.h>
 #include <sds/sds.h>
 #include <fs/file.h>
-int test_log_write() {
-    Env* env = envCreate();
+#include "logReader.h"
+#include "logConstant.h"
+#include "versionBuilder.h"
+
+sds createlog(
+        uint64_t prev_log_number, uint64_t log_number, 
+        uint64_t next_file_number, uint64_t last_sequence) {
     VersionEdit edit;
     versionEditInit(&edit);
     //comparator
     edit.comparator = bytewiseComparator.getName();
-    edit.prev_log_number = 1;
-    edit.log_number = 2;
-    edit.next_file_number = 3;
-    edit.last_sequence = 4;
+    edit.prev_log_number = prev_log_number;
+    edit.log_number = log_number;
+    edit.next_file_number = next_file_number;
+    edit.last_sequence = last_sequence;
+    
+    //versionEdit序列化
+    return versionEditToSds(&edit);
+    
+    
+}
+
+uint64_t logs[2][4] = {
+    {1,2,3,4},
+    {5,6,7,8}
+};
+char* filename = "test_log";
+int test_log_write() {
+     Env* env = envCreate();
     WritableFile* file;
-    const sds manifest = sdsnew("test_log");
+    const sds manifest = sdsnew(filename);
     //创建MANIFEST-000001写入文件
     Error* error = envWritableFileCreate(env, manifest, &file);
     LogWriter* writer = writeLogCreate(file);
-    //versionEdit序列化
-    sds record = versionEditToSds(&edit);
-    //写入到MANIFEST文件
-    error = logAddRecord(writer, record);
-    //sync MANIFEST
-    if (isOk(error)) {
-        error = writableFileSync(file);
+    for( int i = 0; i <2; i++) {
+        sds record = createlog(logs[i][0], logs[i][1], logs[i][2], logs[i][3]);
+        //写入到MANIFEST文件
+        error = logAddRecord(writer, record);
+        //sync MANIFEST
+        if (isOk(error)) {
+            error = writableFileSync(file);
+        } else {
+            return 0;
+        }
+        sdsfree(record);
     }
     //close MANIFEST
     if (isOk(error)) {
         error = writableFileClose(file);
     }
-    sdsfree(record);
+    
     return 1;
 }
 #include "versionSet.h"
@@ -70,7 +93,7 @@ int test_log_read() {
             .store = zmalloc(kBlockSize)
         };
         VersionSetRecover recover = {
-            .recover.Corruption = VersionSetRecoverCorruption,
+            // .recover.Corruption = versionSetRecoverCorruption,
             .error = &Ok
         };
         reader.revocer = &recover;
@@ -81,7 +104,7 @@ int test_log_read() {
         // printf("\ntest\n");
         assert(isOk(error));
         while (readLogRecord(&reader, &record, &scratch) && isOk(recover.error)) {
-            ++read_records;
+            
             VersionEdit edit = {
                 .comparator = NULL,
                 .delete_files = NULL,
@@ -102,31 +125,34 @@ int test_log_read() {
             }
             
             if (editHasLogNumber(&edit)) {
+                assert(edit.log_number == logs[read_records][1]);
                 last_log_number = edit.log_number;
                 have_log_number = true;
             }
-            printf("???\n");
+
             if (editHasPrevLogNumber(&edit)) {
+                assert(edit.prev_log_number == logs[read_records][0]);
                 last_prev_log_number = edit.prev_log_number;
                 have_prev_log_number = true;
             }
-            printf("???1\n");
+
             if (editHasNextFileNumber(&edit)) {
+                assert(edit.next_file_number == logs[read_records][2]);
                 last_next_file_number = edit.next_file_number;
                 have_next_file = true;
             }
-            printf("???2\n");
+
             if (editHasLastSequence(&edit)) {
+                assert(edit.last_sequence == logs[read_records][3]);
                 last_sequence = edit.last_sequence;
                 have_last_sequence = true;
             }
-            printf("???3\n");
+
+            ++read_records;
         }
-        printf("???11111\n");
+        assert(read_records == 2);
+
         // writableFileRelease(file);
-        printf("%lld %lld %lld %lld\n", 
-            last_log_number, last_next_file_number, 
-            last_prev_log_number, last_sequence);
         file = NULL;
         if (isOk(error)) {
             if (!last_next_file_number) {

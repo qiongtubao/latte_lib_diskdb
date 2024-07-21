@@ -68,9 +68,30 @@ void bytewiseComparatorFindShortSuccessor(sds* key) {
         }
     }
 }
-Comparator bytewiseComparator = {
+ComparatorSds bytewiseComparator = {
     .getName = bytewiseComparatorName,
     .compare = bytewiseComparatorCompare,
     .findShortestSeparator = bytewiseComparatorFindShortestSeparator,
     .findShortSuccessor = bytewiseComparatorFindShortSuccessor
 };
+
+
+// ======================= InternalKeyComparator ============================
+#include "internalKey.h"
+#include "sds/sds_plugins.h"
+int internalKeyComparatorCompareSds(InternalKeyComparator* comparator, sds a, sds b) {
+    int r = comparator->comparator.compare(extractUserKey(a), extractUserKey(b));
+    if (r == 0) {
+        const uint64_t anum = decodeFixed64(a + sdslen(a) - 8);
+        const uint64_t bnum = decodeFixed64(b + sdslen(b) - 8);
+        if (anum > bnum) {
+            r = -1;
+        } else if (anum < bnum) {
+            r = +1;
+        }
+    }
+    return r;
+}
+int internalKeyComparatorCompare(InternalKeyComparator* comparator ,InternalKey* a, InternalKey* b) {
+    return internalKeyComparatorCompareSds(comparator, encodeInternalKey(a), encodeInternalKey(b));
+}

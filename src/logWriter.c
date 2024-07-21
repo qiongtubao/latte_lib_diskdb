@@ -2,6 +2,7 @@
 #include "assert.h"
 #include "crc/crc.h"
 #include "sds/sds_plugins.h"
+#include "logConstant.h"
 
 static uint32_t type_crc[5] = {0};
 void InitTypeCrc(uint32_t* type_crc) {

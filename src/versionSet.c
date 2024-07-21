@@ -2,9 +2,14 @@
 #include "fileName.h"
 #include "crc/crc.h"
 #include "versionEdit.h"
-VersionSet* versionSetCreate(sds dbname, Env* env) {
+#include "set/avlSet.h"
+#include "versionBuilder.h"
+#include "logReader.h"
+#include "fileMetaData.h"
+VersionSet* versionSetCreate(sds dbname, Env* env, InternalKeyComparator* icmp) {
     VersionSet* versionset = zmalloc(sizeof(VersionSet));
     versionset->dbname = dbname;
+    versionset->icmp = icmp;
     return versionset;
 }
 
@@ -12,358 +17,113 @@ void versionSetRelease(VersionSet* versionset) {
     zfree(versionset);
 }
 
-VersionSetBuilder* versionSetBuilderCreate() {
-    VersionSetBuilder* builder = zmalloc(sizeof(VersionSetBuilder));
-    return builder;
-}
 
 
-
-void VersionSetRecoverCorruption(VersionSetRecover* recover, size_t bytes, Error* s) {
-    if (isOk(recover->error)) {
-        //只替换成Ok的error  如果不是Ok的话 不替换 记录第一个错误
-        recover->error = s;
-    } 
-}
-
-void ReportCorruption(LogReader* logReader,uint64_t bytes, const char* reason) {
-    ReportDrop(logReader, bytes, errorCreate(CCorruption, "logReader", reason));
-}
-void ReportDrop(LogReader* logReader,uint64_t bytes, Error* reason) {
-  if (logReader->revocer != NULL &&
-      logReader->end_of_buffer_offset - logReader->buffer.len - bytes >= 
-      logReader->initial_offset) {
-    logReader->revocer->Corruption(logReader->revocer,(size_t)(bytes), reason);
-  }
-}
-
-unsigned int ReadPhysicalRecord(LogReader* reader, Slice* result) {
-    while (true) {
-        if (reader->buffer.len < kHeaderSize) {
-            printf("\nreader buffer < 7\n");
-            //长度小于7
-            if (!reader->eof) {
-                // Last read was a full read, so this is a trailer to skip
-                // 上次读取是完整读取，因此这是一段可以跳过的预告片
-                // 清理缓存
-                reader->buffer.p = sdsemptylen(kBlockSize);
-                //buffer读取32768字节， 顺序读
-                Error* error = sequentialFileRead(reader->file,
-                    kBlockSize, &(reader->buffer));
-                //保存读取到那个offset保存
-                reader->end_of_buffer_offset += reader->buffer.len;
-                if (!isOk(error)) {
-                    //失败 清理buffer
-                    SliceClear(&reader->buffer);
-                    //记录错误
-                    ReportDrop(reader->revocer,kBlockSize, error);
-                    //设置eof为true
-                    reader->eof = true;
-                    return kEof;
-                } else if (reader->buffer.len < kBlockSize) {
-                    //设置eof为true
-                    reader->eof = true;
-                }
-                continue;
-            } else {
-                // 请注意，如果 buffer_ 非空，则文件末尾的标头会被截断，
-                // 这可能是由于写入程序在写入标头的过程中崩溃造成的。
-                // 不要将此视为错误，而只需报告 EOF。
-                SliceClear(&reader->buffer);
-                return kEof;
-            }
-        }
-        //解析头
-        char* header = reader->buffer.p;
-        //读取4,5 获得长度
-        const uint32_t a = (uint32_t)(header[4]) & 0xff;
-        const uint32_t b = (uint32_t)(header[5]) & 0xff;
-        //6 获得类型
-        const unsigned int type = header[6];
-        //合并长度
-        const uint32_t length = a | (b << 8);
-        if (kHeaderSize + length > reader->buffer.len) {
-            //7 + 长度 大于buffer的长度
-            size_t drop_size = reader->buffer.len;
-            SliceClear(&reader->buffer);
-            if (!reader->eof) {
-                //记录错误长度
-                ReportCorruption(reader, drop_size, "bad record length");
-                return kBadRecord;
-            }
-            // 如果到达文件末尾而未读取有效负载的 |length| 字节
-            // ，则假设写入器在写入记录的过程中死亡。
-            // 不报告损坏。
-            return kEof;
-        }
-
-        if (type == kZeroType && length == 0) {
-            // 跳过零长度记录而不报告任何丢失，因为
-            // 此类记录是由 env_posix.cc 中基于 mmap 的写入代码生成的，
-            // 该代码预分配文件区域。
-            SliceClear(&reader->buffer);
-            return kBadRecord;
-        }
-        // check crc
-        // 检查crc
-        if (reader->checksum) {
-            uint32_t expected_crc = crc32c_unmask(decodeFixed32(header));
-            //类型的crc（1字节） + 数据的crc
-            uint32_t actual_crc = crc32c(header + 6, 1 + length);
-            if (actual_crc != expected_crc) {
-                // 删除缓冲区的其余部分，因为“长度”本身可能
-                // 已被损坏，如果我们相信它，我们可以找到一些
-                // 真实日志记录的片段，这些片段恰好看起来像
-                // 有效的日志记录。
-                size_t drop_size = reader->buffer.len;
-                SliceClear(&reader->buffer);
-                ReportCorruption(reader, drop_size, "checksum mismatch");
-                return kBadRecord;
-            }
-        }
-        //buffer后移 一个数据段
-        SliceRemovePrefix(&reader->buffer, kHeaderSize + length);
-        // 跳过在 initial_offset_ 之前开始的物理记录
-        if (reader->end_of_buffer_offset - reader->buffer.len - kHeaderSize - length <
-            reader->initial_offset) {
-            SliceClear(result);
-            return kBadRecord;
-        }
-        //读取数据
-        result->p = sdsnewlen(header + kHeaderSize, length);
-        result->len = length;
-        return type;
+void versionSetMakeFileNumberUsed(VersionSet* set, uint64_t number) {
+    if (set->next_file_number <= number) {
+        set->next_file_number = number + 1;
     }
 }
 
-bool skipToInitialBlock(LogReader* reader) {
-    const size_t offset_in_block = reader->initial_offset % kBlockSize;
-    uint64_t block_start_location = reader->initial_offset - offset_in_block;
-
-    //如果我们在拖车里，就不要搜索街区
-    if (offset_in_block > kBlockSize - 6) {
-        block_start_location += kBlockSize;
+void versionSetAppendVersion(VersionSet* set, Version* v) {
+    // Make "v" current
+    assert( v -> refs == 0);
+    assert( v != set->current);
+    if (set->current != NULL) {
+        versionUnref(v);
     }
+    set->current = v;
+    versionRef(v);
 
-    reader->end_of_buffer_offset = block_start_location;
-    // 跳至可以包含初始记录的第一个块的开头
-    if (block_start_location > 0) {
-        Error* skip_error = sequentialFileSkip(reader->file, block_start_location);
-        if (!isOk(skip_error)) {
-            ReportDrop(reader->revocer, block_start_location , skip_error);
-            return false;
-        }
-    }
-    return true;
+    v->prev = set->dummy_versions.prev;
+    v->next = &set->dummy_versions;
+    v->prev->next = v;
+    v->next->prev = v;
 }
 
-//读取日志
-//数据存入到record 如果多个block的保存scratch
-bool readLogRecord(LogReader* reader, Slice* record, sds* scratch) {
-    //最后一次记录offset 小于初始化值 
-    if (reader->last_record_offset < reader->initial_offset) {
-        if (!skipToInitialBlock(reader)) {
-            printf("end...\n");
-            return false;
-        }
-    }
-    //清理数据
-    sdsclear(scratch);
-    record->len = 0;
-    //碎片记录
-    bool in_fragmented_record = false;
-    // Record offset of the logical record that we're reading
-    // 0 is a dummy value to make compilers happy
-    // 记录我们正在读取的逻辑记录的偏移量
-    // 0 是一个虚拟值，以使编译器满意
-    uint64_t prospective_record_offset = 0;
-    //分段
-    Slice fragment = {.p = sdsemptylen(kBlockSize), .len = 0};
-    printf("\nstart fragemengt\n");
-    while (true) {
-        //解析log 数据在fragment
-        const unsigned int record_type = ReadPhysicalRecord(reader, &fragment);
-        printf("\nReadPhysicalRecord %d\n", record_type);
-        // ReadPhysicalRecord may have only had an empty trailer remaining in its
-        // internal buffer. Calculate the offset of the next physical record now
-        // that it has returned, properly accounting for its header size.
-        // ReadPhysicalRecord 的内部缓冲区中可能只剩下一个空的尾部。
-        // 现在计算它返回的下一个物理记录的偏移量，并正确计算其标头大小。
-        uint64_t physical_record_offset =
-            reader->end_of_buffer_offset - reader->buffer.len - kHeaderSize - fragment.len;
-        
-        if (reader->resyncing) {
-            //如果是同步的话 可以跳过？
-            if (record_type == kMiddleType) {
-                continue;
-            } else if (record_type == kLastType) {
-                reader->resyncing = false;
-                continue;
-            } else {
-                reader->resyncing = false;
-            }
-        }
-        switch (record_type) {
-            case kFullType:
-                printf("in_fragmented_record %d\n", in_fragmented_record);
-                if (in_fragmented_record) {
-                    // Handle bug in earlier versions of log::Writer where
-                    // it could emit an empty kFirstType record at the tail end
-                    // of a block followed by a kFullType or kFirstType record
-                    // at the beginning of the next block.
-                    if (sdslen(scratch) != 0) {
-                        ReportCorruption(reader, sdslen(scratch), "partial record without end(1)");
-                    }
-                }
-                prospective_record_offset = physical_record_offset;
-                printf("prospective_record_offset %s %d\n", fragment.p, fragment.len);
-                //清理临时
-                sdsclear(scratch);
-                record->p = fragment.p;
-                record->len = fragment.len;
-                reader->last_record_offset = prospective_record_offset;
-                return true;
-            case kFirstType:
-                if (in_fragmented_record) {
-                    // 处理早期版本的 log::Writer 中的错误，其中
-                    // 它可能在块的尾端发出一个空的 kFirstType 记录
-                    // 然后在下一个块的开头发出一个 kFullType 或 kFirstType 记录。
-                    if (sdslen(scratch) != 0) {
-                        ReportCorruption(reader, sdslen(scratch), "partial record without end(2)");
-                    }
-                }
-                //偏移
-                prospective_record_offset = physical_record_offset;
-                //设置数据
-                // scratch->assign(fragment.p, fragment.len);
-                scratch = sdsReset(scratch, fragment.p, fragment.len);
-                //打开碎片记录
-                in_fragmented_record = true;
-                break;  
-            case kMiddleType:
-                if (!in_fragmented_record) {
-                    ReportCorruption(reader, fragment.len,
-                                "missing start of fragmented record(1)");
-                } else {
-                    //追加数据
-                    scratch = sdscatlen(scratch, fragment.p, fragment.len);
-                }
-                break;
-            case kLastType:
-                if (!in_fragmented_record) {
-                    ReportCorruption(reader, fragment.len,
-                           "missing start of fragmented record(2)");
-                } else {
-                    //追加数据
-                    scratch = sdscatlen(scratch, fragment.p, fragment.len);
-                    //合并所有碎片
-                    record->p = scratch;
-                    record->len = sdslen(scratch);
-                    //保存最后的偏移量
-                    reader->last_record_offset = prospective_record_offset;
-                    return true;
-                }
-                break;
-            case kEof:
-                if (in_fragmented_record) {
-                    // This can be caused by the writer dying immediately after
-                    // writing a physical record but before completing the next; don't
-                    // treat it as a corruption, just ignore the entire logical record.
-                    // 这可能是由于写入器在写入物理记录之后但在完成下一个记录之前立即死亡所致；不要
-                    // 将其视为损坏，而应忽略整个逻辑记录。
-                    sdsclear(scratch);
-                }
-                //返回失败
-                return false;
-            case kBadRecord:
-                if (in_fragmented_record) {
-                    ReportCorruption(reader, sdslen(scratch), "error in middle of record");
-                    in_fragmented_record = false;
-                    sdsclear(scratch);
-                }
-                break;
-            default: {
-                //记录类型无识别
-                char buf[40];
-                snprintf(buf, sizeof(buf), "unknown record type %u", record_type);
-                ReportCorruption(reader,
-                    (fragment.len + (in_fragmented_record ? sdslen(scratch) : 0)),
-                    buf);
-                in_fragmented_record = false;
-                sdsclear(scratch);
-                break;
-            }
-        }
-    }
-    return false;
-}
 
-void versionSetBuilderApply(VersionSetBuilder* builer, VersionEdit* edit) {
-    listIter* iter = listGetIterator(edit->compact_pointers, AL_START_HEAD);
-    listNode* node;
+
+#define kNumLevels 7
+#define kL0_CompactionTrigger 4 
+int64_t TotalFileSize(list* files) {
+    int64_t sum = 0;
+    listIter* iter = listGetIterator(files, AL_START_HEAD);
+    listNode* node = NULL;
     while ((node = listNext(iter)) != NULL) {
-        Pair* p = (Pair*)node->value;
-        int level = (p->first);
-        builer->vset->compact_pointer[level] = 
-            encodeInternalKey(p->second);
+        FileMetaData* file = listNodeValue(node);
+        sum += file->file_size;
     }
     listReleaseIterator(iter);
+    return sum;
+} 
 
-    dictIterator* diter = dictGetIterator(edit->delete_files);
-    dictEntry*  de;
-    while ((de = dictNext(diter)) != NULL) {
-        Pair* p = (Pair*)dictGetEntryKey(de);
-        int level = p->first;
-        uint64_t number = p->second;
-        setAdd(
-            builer->levels[level].deleted_files,
-            number);
+/**
+ * 目前认为每层放大倍数为10
+ */
+static double MaxBytesForLevel(int level) { 
+  // Note: the result for level zero is not really used since we set
+  // the level-0 compaction threshold based on number of files.
+
+  // Result for both level-0 and level-1
+  double result = 10. * 1048576.0;
+  while (level > 1) {
+    result *= 10;
+    level--;
+  }
+  return result;
+}
+
+//计算分数
+void versionSetFinalizeVersion(VersionSet* set, Version* v) {
+    // Precomputed best level for next compaction
+  int best_level = -1;
+  double best_score = -1;
+
+  for (int level = 0; level < kNumLevels - 1; level++) {
+    double score;
+    if (level == 0) {
+      // We treat level-0 specially by bounding the number of files
+      // instead of number of bytes for two reasons:
+      //
+      // (1) With larger write-buffer sizes, it is nice not to do too
+      // many level-0 compactions.
+      //
+      // (2) The files in level-0 are merged on every read and
+      // therefore we wish to avoid too many files when the individual
+      // file size is small (perhaps because of a small write-buffer
+      // setting, or very high compression ratios, or lots of
+      // overwrites/deletions).
+      // 我们通过限制文件数量而不是字节数来特殊处理级别 0，原因有二：
+      //
+      // (1) 如果写入缓冲区较大，最好不要进行太多级别 0 压缩。
+      //
+      // (2) 每次读取时都会合并级别 0 中的文件，因此我们希望在单个文件较小时避免文件过多（可能是因为写入缓冲区设置较小，或者压缩率非常高，或者有很多覆盖/删除）。
+      score = listLength(v->files[level]) /
+              (double)(kL0_CompactionTrigger);
+    } else {
+      // Compute the ratio of current size to size limit.
+      const uint64_t level_bytes = TotalFileSize(v->files[level]);
+      score =
+          (double)(level_bytes) / MaxBytesForLevel(level);
     }
-    dictReleaseIterator(diter);
 
-    iter = listGetIterator(edit->new_files, AL_START_HEAD);
-    while ((de = listNext(iter)) != NULL) {
-        Pair* p = (Pair*)node->value;
-        int level = p->first;
-        FileMetaData* f = fileMetaDataCreate(p->second);
-        f->refs = 1; 
-        // We arrange to automatically compact this file after
-        // a certain number of seeks.  Let's assume:
-        //   (1) One seek costs 10ms
-        //   (2) Writing or reading 1MB costs 10ms (100MB/s)
-        //   (3) A compaction of 1MB does 25MB of IO:
-        //         1MB read from this level
-        //         10-12MB read from next level (boundaries may be misaligned)
-        //         10-12MB written to next level
-        // This implies that 25 seeks cost the same as the compaction
-        // of 1MB of data.  I.e., one seek costs approximately the
-        // same as the compaction of 40KB of data.  We are a little
-        // conservative and allow approximately one seek for every 16KB
-        // of data before triggering a compaction.
-        // 我们安排在一定数量的寻道之后自动压缩此文件。我们假设：
-        // (1) 一次寻道花费 10ms
-        // (2) 写入或读取 1MB 花费 10ms（100MB/s）
-        // (3) 压缩 1MB 需要 25MB 的 IO：
-        // 从此级别读取 1MB
-        // 从下一级别读取 10-12MB（边界可能未对齐）
-        // 向下一级别写入 10-12MB
-        // 这意味着 25 次寻道的成本与压缩 1MB 数据的成本相同。即，一次寻道的成本大约与压缩 40KB 数据的成本相同。
-        // 我们有点保守，在触发压缩之前，大约每 16KB 数据进行一次寻道。
-        
-        // 文件大小/16k 是允许失败的次数 
-        f->allowed_seeks = (int)(f->file_size / 16384U);
-        //次数 < 100 设置为100
-        if (f->allowed_seeks < 100) f->allowed_seeks = 100;
-
-        setRemove(builer->levels[level].deleted_files, f->number);
-        setAdd(builer->levels[level].added_files, f);
+    if (score > best_score) {
+      //取一个分数最高的
+      best_level = level;
+      best_score = score;
     }
-    listReleaseIterator(iter);
- 
+  }
+  //分数最高的层级记录下来 当compaction_score_ >1的时候就进行compaction
+  v->compaction_level = best_level;
+  v->compaction_score = best_score;
+}
+//
+bool versionSetReuseManifest(VersionSet* vset,sds dscname,
+                            sds dscbase) {
+    
 }
 
 
-//
 Error* recoverVersions(VersionSet* set, bool* save_manifest) {
     //先去读取CURRENT 文件拿到manifest file 
     // Read "CURRENT" file, which contains a pointer to the current manifest file
@@ -397,10 +157,10 @@ Error* recoverVersions(VersionSet* set, bool* save_manifest) {
     bool have_next_file = false;
     bool have_last_sequence = false;
 
-    uint64_t next_file = 0;
+    uint64_t last_log_number = 0;
+    uint64_t last_prev_log_number = 0;
+    uint64_t last_next_file_number = 0;
     uint64_t last_sequence = 0;
-    uint64_t log_number = 0;
-    uint64_t prev_log_number = 0;
 
     VersionSetBuilder* builder = versionSetBuilderCreate();
     int read_records = 0;
@@ -425,9 +185,89 @@ Error* recoverVersions(VersionSet* set, bool* save_manifest) {
         sds scratch;
         //解析versionEdit
         while (readLogRecord(&reader, &record, &scratch) && isOk(error)) {
+            VersionEdit edit = {
+                .comparator = NULL,
+                .delete_files = NULL,
+                .new_files = NULL
+            };
+            error = decodeVersionEditSlice(&edit, &record);
+            if (isOk(error)) {
+                if (edit.comparator != NULL 
+                    && strncmp(edit.comparator, bytewiseComparator.getName(), sdslen(bytewiseComparator.getName())) == 0) {
+                error = errorCreate(CInvalidArgument,
+                    edit.comparator
+                    , "does not match existing comparator "
+                    , bytewiseComparator.getName());
+                }
+            }
+            if (isOk(error)) {
+                versionSetBuilderApply(builder, &edit);
+            }
+            
+            if (editHasLogNumber(&edit)) {
+                last_log_number = edit.log_number;
+                have_log_number = true;
+            }
 
+            if (editHasPrevLogNumber(&edit)) {
+                last_prev_log_number = edit.prev_log_number;
+                have_prev_log_number = true;
+            }
+
+            if (editHasNextFileNumber(&edit)) {
+                last_next_file_number = edit.next_file_number;
+                have_next_file = true;
+            }
+
+            if (editHasLastSequence(&edit)) {
+                last_sequence = edit.last_sequence;
+                have_last_sequence = true;
+            }
+
+            ++read_records;
+            
         }
     }
+    // envSequentialFileRelease(file);
+    file = NULL;
 
+    if (isOk(error)) {
+        if (!have_next_file) {
+            error = errorCreate(CCorruption, "recoverVersions", "no meta-nextfile entry in descriptor");
+        } else if (!have_log_number) {
+            error = errorCreate(CCorruption, "recoverVersions", "no meta-lognumber entry in descriptor");
+        } else if (!have_last_sequence) {
+            error = errorCreate(CCorruption, "recoverVersions", "no last-sequence-number entry in descriptor");
+        }
+        if (!have_prev_log_number) {
+            last_prev_log_number = 0;
+        }
+        versionSetMakeFileNumberUsed(set, last_prev_log_number);
+        versionSetMakeFileNumberUsed(set, last_log_number);
+    }
+
+    if (isOk(error)) {
+        Version* v = versionCreate(set);
+        builderSaveToVersion(builder, v);
+        versionSetFinalizeVersion(set, v);
+        versionSetAppendVersion(set, v);
+        set->manifest_file_number = last_next_file_number;
+        set->next_file_number = last_next_file_number + 1;
+        set->last_sequence = last_sequence;
+        set->log_number = last_log_number;
+        set->prev_log_number = last_prev_log_number;
+
+        if (versionSetReuseManifest(set ,dscname, current)) {
+
+        } else {
+            *save_manifest = true;
+        }
+    } else {
+        // Log(options_->info_log, "Error recovering version set with %d records: %s",
+        //     read_records, error.c_str());
+    }
     return error;
 }
+
+
+

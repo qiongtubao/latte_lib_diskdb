@@ -2,6 +2,9 @@
 #include "sds/sds_plugins.h"
 #include "internalKey.h"
 #include "utils/error.h"
+#include "set/avlSet.h"
+#include "set/set.h"
+#include "fileMetaData.h"
 
 enum Tag {
   kComparator = 1,  //比较器
@@ -25,22 +28,18 @@ sds versionEditToSds(VersionEdit* ve) {
         dst = sdsAppendLengthPrefixedSlice(dst, &slice);
     }
     if (ve->log_number > 0) {
-        printf("\n1.%lld\n", ve->log_number);
         dst = sdsAppendVarint32(dst, kLogNumber);
         dst = sdsAppendVarint64(dst, ve->log_number);
     }
     if (ve->prev_log_number > 0) {
-        printf("2.%lld\n", ve->prev_log_number);
         dst = sdsAppendVarint32(dst, kPrevLogNumber);
         dst = sdsAppendVarint64(dst, ve->prev_log_number);
     }
     if (ve->next_file_number > 0) {
-        printf("3.%lld\n", ve->next_file_number);
         dst = sdsAppendVarint32(dst, kNextFileNumber);
         dst = sdsAppendVarint64(dst, ve->next_file_number);
     }
     if (ve->last_sequence > 0) {
-        printf("4.%lld\n", ve->last_sequence);
         dst = sdsAppendVarint32(dst, kLastSequence);
         dst = sdsAppendVarint64(dst, ve->last_sequence);
     }
@@ -85,7 +84,9 @@ sds versionEditToSds(VersionEdit* ve) {
     return dst;
 }
 
+avlTreeType avlSetFileMetaDataType = {
 
+};
 
 void versionEditInit(VersionEdit* ve) {
     ve->log_number = -1;
@@ -94,7 +95,7 @@ void versionEditInit(VersionEdit* ve) {
     ve->prev_log_number = -1;
     ve->last_sequence = -1;
     ve->compact_pointers = listCreate();
-    ve->delete_files = setCreate(&sdsSetDictType);
+    ve->delete_files = setCreateAvl(&avlSetFileMetaDataType);
     ve->new_files = listCreate();
 }
 
@@ -167,6 +168,7 @@ void editClear(VersionEdit* edit) {
 }
 //字符串解析成VersionEdit
 Error* decodeVersionEditSlice(VersionEdit* edit, Slice* src) {
+    //清理并初始化
     editClear(edit);
     Slice input = {
         .p = src->p,
@@ -180,13 +182,11 @@ Error* decodeVersionEditSlice(VersionEdit* edit, Slice* src) {
     FileMetaData f;
     Slice str;
     InternalKey key;
-    printf("input :%s %d\n", input.p, input.len);
     while (msg == NULL && getVarint32(&input, &tag)) {
-        printf("tag: %d\n", tag);
         switch (tag)
         {
             case kComparator:
-                /* code */
+                //比较器名字
                 if (getLengthPrefixedSlice(&input, &str)) {
                     edit->comparator = str.p;
                 } else {
@@ -194,34 +194,39 @@ Error* decodeVersionEditSlice(VersionEdit* edit, Slice* src) {
                 }
                 break;
             case kLogNumber:
+                //文件序列号
                 if (getVarint64(&input, &edit->log_number)) {
-                    printf("kLogNumber...%lld\n", edit->log_number);
+                    // printf("kLogNumber...%lld\n", edit->log_number);
                 } else {
                     msg = "log number";
                 }
                 break;
             case kPrevLogNumber:
+                //前日志文件序列号
                 if (getVarint64(&input, &edit->prev_log_number)) {
-                    printf("kPrevLogNumber...%lld\n", edit->prev_log_number);
+                    // printf("kPrevLogNumber...%lld\n", edit->prev_log_number);
                 } else {
                     msg = "previous log number";
                 }
                 break;
             case kNextFileNumber:
+                //下一个文件序列号
                 if (getVarint64(&input, &edit->next_file_number)) {
-                    printf("kNextFileNumber...%lld\n", edit->next_file_number);
+                    // printf("kNextFileNumber...%lld\n", edit->next_file_number);
                 } else {
                     msg = "next file number";
                 }
                 break;
             case kLastSequence:
+                //下一个写入序列号
                 if (getVarint64(&input, &edit->last_sequence)) {
-                    printf("kLastSequence...%lld\n", edit->last_sequence);
+                    // printf("kLastSequence...%lld\n", edit->last_sequence);
                 } else {
                     msg = "last sequence number";
                 }
                 break;
             case kCompactPointer:
+                //compactPointer 类型
                 if (getLevel(&input, &level) && getInternalKey(&input, &key)) {
                     InternalKey* copy = internalKeyCopy(&key);
                     listAddNodeTail(edit->compact_pointers, pairCreate(level, &key));
@@ -230,6 +235,7 @@ Error* decodeVersionEditSlice(VersionEdit* edit, Slice* src) {
                 }
                 break;
             case kDeletedFile:
+                //删除文件
                 if (getLevel(&input, &level) && getVarint64(&input, &number)) {
                     setAdd(edit->delete_files, pairCreate(level, number));
                 } else {
@@ -237,6 +243,7 @@ Error* decodeVersionEditSlice(VersionEdit* edit, Slice* src) {
                 }
                 break;
             case kNewFile:
+                //创建文件
                 if (getLevel(&input, &level)&& getVarint64(&input, &f.number) &&
                     getVarint64(&input, &f.file_size) &&
                     getInternalKey(&input, &f.smallest) &&
@@ -276,14 +283,3 @@ bool editHasLastSequence(VersionEdit* ve) {
     return ve->last_sequence > 0;
 }
 
-FileMetaData* fileMetaDataCreate() {
-    FileMetaData* meta = zmalloc(sizeof(FileMetaData));
-    meta->refs = 0;
-    meta->allowed_seeks = (1<<30);
-    meta->file_size = 0;
-    meta->smallest.rep = NULL;
-    meta->smallest.seq = 0;
-    meta->largest.rep = NULL;
-    meta->largest.seq = 0;
-    return meta;
-}

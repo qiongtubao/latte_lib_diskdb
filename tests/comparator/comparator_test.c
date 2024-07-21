@@ -106,11 +106,11 @@ int test_byte_comparator_findShortSuccessor() {
 }
 int test_api(void) {
     {
-        test_cond("byte comparator compare function",
+        test_cond("byte comparatorSds compare function",
             test_byte_comparator_compare() == 1);
-        test_cond("byte comparator findShortestSeparator function",
+        test_cond("byte comparatorSds findShortestSeparator function",
             test_byte_comparator_findShortestSeparator() == 1);
-        test_cond("byte comparator findShortSuccessor function",
+        test_cond("byte comparatorSds findShortSuccessor function",
             test_byte_comparator_findShortSuccessor() == 1);
     } test_report()
     return 1;
